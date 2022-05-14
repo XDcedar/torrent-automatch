@@ -1,0 +1,6 @@
+.venv
+result
+testcase
+testsrclist.txt
+TODO.txt
+*.view.vim
