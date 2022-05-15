@@ -12,6 +12,8 @@ import random
 
 @dataclass
 class BlockMeta:
+    """记录种子的每个block的信息"""
+
     id: int = 0
     # the block contains bytes in index range [first_byte, last_byte)
     first_byte: int = 0
@@ -24,13 +26,15 @@ class BlockMeta:
 
 @dataclass
 class FileMeta:
+    """记录种子中的文件的信息"""
+
     path: str
     length: int
     first_byte: int
     last_byte: int
-    blocks: list
-    match_candidates: list
-    matches: list
+    blocks: list  # 保存的是对应的 BlockMeta
+    match_candidates: list  # 保存的是 ExistedFileMeta，它们是该FileMeta的候选，目前会把所有大小相同的文件加进来
+    matches: list  # 保存的是 ExistedFileMeta，它们已确定是种子中的文件。不知为何要用list，按理说只有一个才对
 
     def __init__(self):
         self.path = ""
@@ -44,6 +48,8 @@ class FileMeta:
 
 @dataclass
 class ExistedFileMeta:
+    """记录硬盘中找到的文件的信息"""
+
     path: str = ""
     length: int = 0
 
@@ -65,6 +71,7 @@ def do_arg_parse():
 
 
 def parse_files_meta(root_directory_path, files_info, block_hashes, block_size):
+    """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Block"""
     file_metas = []
     current_byte = 0
     num_blocks = len(block_hashes)
@@ -86,6 +93,9 @@ def parse_files_meta(root_directory_path, files_info, block_hashes, block_size):
             fm.blocks.append(current_block)
         if current_block.last_byte >= fm.last_byte:
             continue
+        # 把所有属于该 FileMeta 的 BlockMeta() 放进来。
+        # 如果这个 BlockMeta() 只有一部分属于该 FileMeta 则直接 break 而不让 block_id 自增，
+        # 以便下一个外层 for 循环把它放到下一个 FileMeta 中去。
         while block_id < num_blocks:
             current_block = BlockMeta()
             current_block.id = block_id
@@ -109,6 +119,7 @@ def parse_files_meta(root_directory_path, files_info, block_hashes, block_size):
 
 
 def parse_existed_files_meta(file_list):
+    """根据输入的 file_list 读取硬盘中的文件，构建 ExistedFileMeta 信息"""
     res = []
     for line in file_list:
         efm = ExistedFileMeta()
@@ -119,6 +130,7 @@ def parse_existed_files_meta(file_list):
 
 
 def pass1_check_identical(fm, efm, blocks_to_check):
+    """如果文件至少包含1个完整的Block，则调用这个函数可以进行匹配"""
     bms = fm.blocks[:]
     random.shuffle(bms)
     sampled_bms = []
@@ -145,8 +157,12 @@ def pass1_check_identical(fm, efm, blocks_to_check):
 
 # this function has side-effect!
 def pass2_check_identical(bm, file_metas):
+    """文件不包含完整Block，则调用这个函数进行匹配。这种文件的大小要么<1个Block，要么横跨两个Block。"""
     hasher = sha1()
     fm_covered = []
+    # 找到所有跟 bm 有交集的 file_meta，
+    # 以它们在 file_metas 中的默认顺序依次读取，计算它们拼起来的片段对应的 sha1
+    # TODO: 本来应该计算所有顺序组合的情况
     for fm in file_metas:
         if not (fm.first_byte >= bm.last_byte or fm.last_byte <= bm.first_byte):
             if len(fm.match_candidates) == 0:
@@ -158,7 +174,7 @@ def pass2_check_identical(bm, file_metas):
                 fm_covered.append(fm)
             intersect_first_byte_in_file = intersect_first_byte - fm.first_byte
             intersect_last_byte_in_file = intersect_last_byte - fm.first_byte
-            # TODO: should emumerate over all possible combinations
+            # TODO: should enumerate over all possible combinations
             efm = fm.match_candidates[0]
             ef = open(efm.path, "rb")
             ef.seek(intersect_first_byte_in_file)
@@ -218,12 +234,10 @@ if __name__ == "__main__":
                 if pass1_check_identical(fm, efm, blocks_to_check):
                     fm.matches.append(efm)
 
-        """
-        t1 = []
-        for fm in file_metas:
-            if len(fm.matches) > 0:
-                t1.append(fm)
-        """
+        # t1 = []
+        # for fm in file_metas:
+        #     if len(fm.matches) > 0:
+        #         t1.append(fm)
 
         # pass 2, try to match some files, each contained in a whole block
         for fm in file_metas:
@@ -240,12 +254,11 @@ if __name__ == "__main__":
             ):
                 fm.matches.append(fm.match_candidates[0])
 
-        """
-        t2 = []
-        for fm in file_metas:
-            if len(fm.matches) > 0:
-                t2.append(fm)
-        """
+        # t2 = []
+        # for fm in file_metas:
+        #     if len(fm.matches) > 0:
+        #         t2.append(fm)
+
     except Exception as e:
         print(e, file=sys.stderr)
         print("Failed to read some data blocks!", file=sys.stderr)
