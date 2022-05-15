@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # coding=utf8
 
-import torrent_parser
 import argparse
-import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha1
-import os
 import random
+import sys
+from pathlib import Path
+
+import torrent_parser
 
 
 @dataclass
@@ -25,52 +26,43 @@ class BlockMeta:
 
 
 @dataclass
-class FileMeta:
-    """记录种子中的文件的信息"""
-
-    path: str
-    length: int
-    first_byte: int
-    last_byte: int
-    blocks: list  # 保存的是对应的 BlockMeta
-    match_candidates: list  # 保存的是 ExistedFileMeta，它们是该FileMeta的候选，目前会把所有大小相同的文件加进来
-    matches: list  # 保存的是 ExistedFileMeta，它们已确定是种子中的文件。不知为何要用list，按理说只有一个才对
-
-    def __init__(self):
-        self.path = ""
-        self.length = 0
-        self.first_byte = 0
-        self.last_byte = 0
-        self.blocks = []
-        self.match_candidates = []
-        self.matches = []
-
-
-@dataclass
 class ExistedFileMeta:
     """记录硬盘中找到的文件的信息"""
 
-    path: str = ""
+    path: Path = field(default_factory=Path)
     length: int = 0
+
+
+@dataclass
+class FileMeta:
+    """记录种子中的文件的信息"""
+
+    path: Path = field(default_factory=Path)
+    length: int = 0
+    first_byte: int = 0
+    last_byte: int = 0
+    blocks: list[BlockMeta] = field(default_factory=list)
+    match_candidates: list[ExistedFileMeta] = field(default_factory=list)  # 该 FileMeta 的候选，目前会把所有大小相同的文件加进来
+    matches: list[ExistedFileMeta] = field(default_factory=list)  # 已确定对应该 FileMeta。不知为何要用list，按理说只会有一个才对
 
 
 def do_arg_parse():
     parser = argparse.ArgumentParser(description="“浮肿一时爽，一直浮肿一直爽。”")
     parser.add_argument(
         "--src-list",
-        type=str,
+        type=Path,
         dest="src_list",
         help="specify a textfile, each line contains a file path of existing file as the potential linking source.",
     )
-    parser.add_argument("--torrent", type=str, dest="torrent", help="the torrent file to work with")
-    parser.add_argument("--dst", type=str, dest="dst", help="the destination directory")
+    parser.add_argument("--torrent", type=Path, dest="torrent", help="the torrent file to work with")
+    parser.add_argument("--dst", type=Path, dest="dst", help="the destination directory")
     parser.add_argument("--blocks-to-check", type=int, dest="blocks_to_check", default=10)
     parser.add_argument("--create-symlinks", dest="create_symlinks", action="store_true")
     args = parser.parse_args()
     return args, parser
 
 
-def parse_files_meta(root_directory_path, files_info, block_hashes, block_size):
+def parse_files_meta(root_directory_path: Path, files_info: list, block_hashes: list, block_size: int):
     """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Block"""
     file_metas = []
     current_byte = 0
@@ -79,14 +71,12 @@ def parse_files_meta(root_directory_path, files_info, block_hashes, block_size):
     current_block = BlockMeta()
     current_block.last_byte = 0
     for f in files_info:
-        fm = FileMeta()
-        fm.path = root_directory_path
-        for p in f["path"]:
-            fm.path = os.path.join(fm.path, p)
-        fm.length = int(f["length"])
-        fm.first_byte = current_byte
-        fm.last_byte = current_byte + fm.length
-        fm.blocks = []
+        fm = FileMeta(
+            path=root_directory_path.joinpath(*f["path"]),
+            length=int(f["length"]),
+            first_byte=current_byte,
+            last_byte=current_byte + int(f["length"]),
+        )
         current_byte += fm.length
         file_metas.append(fm)
         if current_block.last_byte > fm.first_byte:
@@ -94,65 +84,53 @@ def parse_files_meta(root_directory_path, files_info, block_hashes, block_size):
         if current_block.last_byte >= fm.last_byte:
             continue
         # 把所有属于该 FileMeta 的 BlockMeta() 放进来。
-        # 如果这个 BlockMeta() 只有一部分属于该 FileMeta 则直接 break 而不让 block_id 自增，
+        # 如果这个 BlockMeta() 只有一部分属于该 FileMeta，
+        # 则直接 break 而不让 block_id 自增，
         # 以便下一个外层 for 循环把它放到下一个 FileMeta 中去。
         while block_id < num_blocks:
-            current_block = BlockMeta()
-            current_block.id = block_id
-            current_block.first_byte = block_id * block_size
-            current_block.last_byte = current_block.first_byte + block_size
-            current_block.hash = block_hashes[block_id].strip()
+            current_block = BlockMeta(
+                id=block_id,
+                first_byte=block_id * block_size,
+                last_byte=block_id * block_size + block_size,
+                hash=block_hashes[block_id].strip(),
+            )
             block_id += 1
-            if current_block.first_byte < fm.last_byte:
-                fm.blocks.append(current_block)
-                if current_block.last_byte <= fm.last_byte:
-                    current_block.in_single_file = True
-                    current_block.first_byte_in_file = current_block.first_byte - fm.first_byte
-                    current_block.last_byte_in_file = current_block.last_byte - fm.first_byte
-                else:
-                    break
-            else:
+            # 当前 block_meta 已越过 file_meta 的位置
+            if current_block.first_byte >= fm.last_byte:
                 break
+            fm.blocks.append(current_block)
+            # 当前 block_meta 只有一部分处于 file_meta 之中
+            if current_block.last_byte > fm.last_byte:
+                break
+            current_block.in_single_file = True
+            current_block.first_byte_in_file = current_block.first_byte - fm.first_byte
+            current_block.last_byte_in_file = current_block.last_byte - fm.first_byte
         if block_id >= num_blocks:
             break
     return file_metas
 
 
-def parse_existed_files_meta(file_list):
+def parse_existed_files_meta(file_list: list):
     """根据输入的 file_list 读取硬盘中的文件，构建 ExistedFileMeta 信息"""
-    res = []
-    for line in file_list:
-        efm = ExistedFileMeta()
-        efm.path = os.path.abspath(line.strip())
-        efm.length = os.stat(efm.path).st_size
-        res.append(efm)
+    path_list = map(lambda line: Path(line.strip()).resolve(), file_list)
+    res = [ExistedFileMeta(path=p, length=p.stat().st_size) for p in path_list]
     return res
 
 
-def pass1_check_identical(fm, efm, blocks_to_check):
+def pass1_check_identical(fm: FileMeta, efm: ExistedFileMeta, blocks_to_check: int):
     """如果文件至少包含1个完整的Block，则调用这个函数可以进行匹配"""
-    bms = fm.blocks[:]
-    random.shuffle(bms)
-    sampled_bms = []
-    for bm in bms:
-        if bm.in_single_file:
-            sampled_bms.append(bm)
-        if len(sampled_bms) >= blocks_to_check:
-            break
-    if len(sampled_bms) == 0:
+    blocks_in_single_file = [x for x in fm.blocks if x.in_single_file]
+    k = min(len(blocks_in_single_file), blocks_to_check)
+    sampled_bms = random.sample(blocks_in_single_file, k)
+    if not sampled_bms:
         return False
-    ef = open(efm.path, "rb")
-    identical = True
-    for bm in sampled_bms:
-        hasher = sha1()
-        ef.seek(bm.first_byte_in_file)
-        hasher.update(ef.read(bm.last_byte_in_file - bm.first_byte_in_file))
-        hash = hasher.hexdigest()
-        if hash != bm.hash:
-            identical = False
-            break
-    ef.close()
-    return identical
+    with open(efm.path, "rb") as ef:
+        for bm in sampled_bms:
+            ef.seek(bm.first_byte_in_file)
+            hashhex = sha1(ef.read(bm.last_byte_in_file - bm.first_byte_in_file)).hexdigest()
+            if hashhex != bm.hash:
+                return False
+    return True
 
 
 # this function has side-effect!
@@ -165,7 +143,7 @@ def pass2_check_identical(bm, file_metas):
     # TODO: 本来应该计算所有顺序组合的情况
     for fm in file_metas:
         if not (fm.first_byte >= bm.last_byte or fm.last_byte <= bm.first_byte):
-            if len(fm.match_candidates) == 0:
+            if not fm.match_candidates:
                 return False
             intersect_first_byte = max(fm.first_byte, bm.first_byte)
             intersect_last_byte = min(fm.last_byte, bm.last_byte)
@@ -176,14 +154,13 @@ def pass2_check_identical(bm, file_metas):
             intersect_last_byte_in_file = intersect_last_byte - fm.first_byte
             # TODO: should enumerate over all possible combinations
             efm = fm.match_candidates[0]
-            ef = open(efm.path, "rb")
-            ef.seek(intersect_first_byte_in_file)
-            hasher.update(ef.read(intersect_last_byte_in_file - intersect_first_byte_in_file))
-            ef.close()
+            with open(efm.path, "rb") as ef:
+                ef.seek(intersect_first_byte_in_file)
+                hasher.update(ef.read(intersect_last_byte_in_file - intersect_first_byte_in_file))
     hash = hasher.hexdigest()
     if hash == bm.hash:
         for fm in fm_covered:
-            if len(fm.matches) == 0:
+            if not fm.matches:
                 fm.matches.append(fm.match_candidates[0])
         return True
     return False
@@ -194,7 +171,7 @@ if __name__ == "__main__":
     file_metas = []
 
     try:
-        abs_dst = os.path.abspath(args.dst)
+        args.dst = args.dst.resolve()
     except Exception as e:
         print(e, file=sys.stderr)
         print("Wrong destination path!", file=sys.stderr)
@@ -205,7 +182,7 @@ if __name__ == "__main__":
         data = torrent_parser.parse_torrent_file(args.torrent)
         block_size = int(data["info"]["piece length"])
         file_metas = parse_files_meta(
-            os.path.join(abs_dst, data["info"]["name"]), data["info"]["files"], data["info"]["pieces"], block_size
+            args.dst / data["info"]["name"], data["info"]["files"], data["info"]["pieces"], block_size
         )
     except Exception as e:
         print(e, file=sys.stderr)
@@ -214,7 +191,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        file_list = open(args.src_list, "r", encoding="utf8")
+        file_list = args.src_list.read_text(encoding="utf8").splitlines()
         existed_file_metas = parse_existed_files_meta(file_list)
     except Exception as e:
         print(e, file=sys.stderr)
@@ -236,18 +213,18 @@ if __name__ == "__main__":
 
         # t1 = []
         # for fm in file_metas:
-        #     if len(fm.matches) > 0:
+        #     if fm.matches:
         #         t1.append(fm)
 
         # pass 2, try to match some files, each contained in a whole block
         for fm in file_metas:
-            if len(fm.blocks) == 1 and len(fm.matches) == 0:
+            if len(fm.blocks) == 1 and not fm.matches:
                 pass2_check_identical(fm.blocks[0], file_metas)
 
         # also, it may be the case where a file is covered by two blocks
         for fm in file_metas:
             if (
-                len(fm.matches) == 0
+                not fm.matches
                 and len(fm.blocks) == 2
                 and pass2_check_identical(fm.blocks[0], file_metas)
                 and pass2_check_identical(fm.blocks[1], file_metas)
@@ -256,7 +233,7 @@ if __name__ == "__main__":
 
         # t2 = []
         # for fm in file_metas:
-        #     if len(fm.matches) > 0:
+        #     if fm.matches:
         #         t2.append(fm)
 
     except Exception as e:
@@ -268,19 +245,18 @@ if __name__ == "__main__":
     num_linked = 0
     try:
         # finally, create hard links
-        for fm in file_metas:
-            if len(fm.matches) > 0:
-                efm = fm.matches[0]
-                os.makedirs(os.path.dirname(fm.path), exist_ok=True)
-                if args.create_symlinks:
-                    os.symlink(efm.path, fm.path)
-                else:
-                    os.link(efm.path, fm.path)
-                num_linked += 1
+        for fm in (x for x in file_metas if x.matches):
+            efm = fm.matches[0]
+            fm.path.parent.mkdir(parents=True, exist_ok=True)
+            if args.create_symlinks:
+                efm.path.symlink_to(fm.path)
+            else:
+                efm.path.link_to(fm.path)
+            num_linked += 1
     except Exception as e:
         print(e, file=sys.stderr)
         print("Error occurs when creating links!", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
 
-    print("Successfully linked %d/%d files." % (num_linked, len(file_metas)))
+    print(f"Successfully linked {num_linked}/{len(file_metas)} files.")
