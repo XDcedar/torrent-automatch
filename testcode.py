@@ -4,6 +4,13 @@
 import torrent_parser
 from pprint import pprint
 
+'''
+需要考虑的边缘情况：
+1. 不同种子中包含相同的文件。
+   当一个文件夹中存在与种子A匹配的文件时，不能保证整个文件夹的文件都来自该种子。
+2. 同一个文件夹包含来自多个种子的文件的情况。
+'''
+
 def test():
     breakpoint()
     torrent = torrent_parser.parse_torrent_file('./testcase/[VCB-Studio] Sono Hanabira ni Kuchizuke o꞉ Anata to Koibito Tsunagi [Ma10p_1080p].torrent')
