@@ -12,11 +12,11 @@ import torrent_parser
 
 
 @dataclass
-class BlockMeta:
-    """记录种子的每个block的信息"""
+class PieceMeta:
+    """记录种子的每个Piece的信息"""
 
     id: int = 0
-    # the block contains bytes in index range [first_byte, last_byte)
+    # the piece contains bytes in index range [first_byte, last_byte)
     first_byte: int = 0
     last_byte: int = 0
     hash: str = ""
@@ -26,7 +26,7 @@ class BlockMeta:
 
 
 @dataclass
-class ExistedFileMeta:
+class DiskFileMeta:
     """记录硬盘中找到的文件的信息"""
 
     path: Path = field(default_factory=Path)
@@ -41,9 +41,9 @@ class FileMeta:
     length: int = 0
     first_byte: int = 0
     last_byte: int = 0
-    blocks: list[BlockMeta] = field(default_factory=list)
-    match_candidates: list[ExistedFileMeta] = field(default_factory=list)  # 该 FileMeta 的候选，目前会把所有大小相同的文件加进来
-    matches: list[ExistedFileMeta] = field(default_factory=list)  # 已确定对应该 FileMeta。不知为何要用list，按理说只会有一个才对
+    pieces: list[PieceMeta] = field(default_factory=list)
+    match_candidates: list[DiskFileMeta] = field(default_factory=list)  # 该 FileMeta 的候选，目前会把所有大小相同的文件加进来
+    matches: list[DiskFileMeta] = field(default_factory=list)  # 已确定对应该 FileMeta。不知为何要用list，按理说只会有一个才对
 
 
 def do_arg_parse():
@@ -52,24 +52,24 @@ def do_arg_parse():
         "--src-list",
         type=Path,
         dest="src_list",
-        help="specify a textfile, each line contains a file path of existing file as the potential linking source.",
+        help="specify a textfile, each line contains a folder or file as a potential linking source.",
     )
     parser.add_argument("--torrent", type=Path, dest="torrent", help="the torrent file to work with")
     parser.add_argument("--dst", type=Path, dest="dst", help="the destination directory")
-    parser.add_argument("--blocks-to-check", type=int, dest="blocks_to_check", default=10)
+    parser.add_argument("--pieces-to-check", type=int, dest="pieces_to_check", default=10)
     parser.add_argument("--create-symlinks", dest="create_symlinks", action="store_true")
     args = parser.parse_args()
     return args, parser
 
 
-def parse_files_meta(root_directory_path: Path, files_info: list, block_hashes: list, block_size: int):
-    """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Block"""
+def parse_files_meta(root_directory_path: Path, files_info: list, piece_hashes: list, piece_length: int):
+    """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Piece"""
     file_metas = []
     current_byte = 0
-    num_blocks = len(block_hashes)
-    block_id = 0
-    current_block = BlockMeta()
-    current_block.last_byte = 0
+    num_pieces = len(piece_hashes)
+    piece_id = 0
+    current_piece = PieceMeta()
+    current_piece.last_byte = 0
     for f in files_info:
         fm = FileMeta(
             path=root_directory_path.joinpath(*f["path"]),
@@ -79,52 +79,52 @@ def parse_files_meta(root_directory_path: Path, files_info: list, block_hashes: 
         )
         current_byte += fm.length
         file_metas.append(fm)
-        if current_block.last_byte > fm.first_byte:
-            fm.blocks.append(current_block)
-        if current_block.last_byte >= fm.last_byte:
+        if current_piece.last_byte > fm.first_byte:
+            fm.pieces.append(current_piece)
+        if current_piece.last_byte >= fm.last_byte:
             continue
-        # 把所有属于该 FileMeta 的 BlockMeta() 放进来。
-        # 如果这个 BlockMeta() 只有一部分属于该 FileMeta，
-        # 则直接 break 而不让 block_id 自增，
+        # 把所有属于该 FileMeta 的 PieceMeta() 放进来。
+        # 如果这个 PieceMeta() 只有一部分属于该 FileMeta，
+        # 则直接 break 而不让 piece_id 自增，
         # 以便下一个外层 for 循环把它放到下一个 FileMeta 中去。
-        while block_id < num_blocks:
-            current_block = BlockMeta(
-                id=block_id,
-                first_byte=block_id * block_size,
-                last_byte=block_id * block_size + block_size,
-                hash=block_hashes[block_id].strip(),
+        while piece_id < num_pieces:
+            current_piece = PieceMeta(
+                id=piece_id,
+                first_byte=piece_id * piece_length,
+                last_byte=piece_id * piece_length + piece_length,
+                hash=piece_hashes[piece_id].strip(),
             )
-            block_id += 1
-            # 当前 block_meta 已越过 file_meta 的位置
-            if current_block.first_byte >= fm.last_byte:
+            piece_id += 1
+            # 当前 piece_meta 已越过 file_meta 的位置
+            if current_piece.first_byte >= fm.last_byte:
                 break
-            fm.blocks.append(current_block)
-            # 当前 block_meta 只有一部分处于 file_meta 之中
-            if current_block.last_byte > fm.last_byte:
+            fm.pieces.append(current_piece)
+            # 当前 piece_meta 只有一部分处于 file_meta 之中
+            if current_piece.last_byte > fm.last_byte:
                 break
-            current_block.in_single_file = True
-            current_block.first_byte_in_file = current_block.first_byte - fm.first_byte
-            current_block.last_byte_in_file = current_block.last_byte - fm.first_byte
-        if block_id >= num_blocks:
+            current_piece.in_single_file = True
+            current_piece.first_byte_in_file = current_piece.first_byte - fm.first_byte
+            current_piece.last_byte_in_file = current_piece.last_byte - fm.first_byte
+        if piece_id >= num_pieces:
             break
     return file_metas
 
 
-def parse_existed_files_meta(file_list: list):
-    """根据输入的 file_list 读取硬盘中的文件，构建 ExistedFileMeta 信息"""
+def parse_disk_file_metas(file_list: list):
+    """根据输入的 file_list 读取硬盘中的文件，构建 DiskFileMeta 信息"""
     path_list = map(lambda line: Path(line.strip()).resolve(), file_list)
-    res = [ExistedFileMeta(path=p, length=p.stat().st_size) for p in path_list]
+    res = [DiskFileMeta(path=p, length=p.stat().st_size) for p in path_list]
     return res
 
 
-def pass1_check_identical(fm: FileMeta, efm: ExistedFileMeta, blocks_to_check: int):
-    """如果文件至少包含1个完整的Block，则调用这个函数可以进行匹配"""
-    blocks_in_single_file = [x for x in fm.blocks if x.in_single_file]
-    k = min(len(blocks_in_single_file), blocks_to_check)
-    sampled_bms = random.sample(blocks_in_single_file, k)
+def pass1_check_identical(fm: FileMeta, dfm: DiskFileMeta, pieces_to_check: int):
+    """如果文件至少包含1个完整的Piece，则调用这个函数可以进行匹配"""
+    pieces_in_single_file = [x for x in fm.pieces if x.in_single_file]
+    k = min(len(pieces_in_single_file), pieces_to_check)
+    sampled_bms = random.sample(pieces_in_single_file, k)
     if not sampled_bms:
         return False
-    with open(efm.path, "rb") as ef:
+    with open(dfm.path, "rb") as ef:
         for bm in sampled_bms:
             ef.seek(bm.first_byte_in_file)
             hashhex = sha1(ef.read(bm.last_byte_in_file - bm.first_byte_in_file)).hexdigest()
@@ -135,7 +135,7 @@ def pass1_check_identical(fm: FileMeta, efm: ExistedFileMeta, blocks_to_check: i
 
 # this function has side-effect!
 def pass2_check_identical(bm, file_metas):
-    """文件不包含完整Block，则调用这个函数进行匹配。这种文件的大小要么<1个Block，要么横跨两个Block。"""
+    """文件不包含完整Piece，则调用这个函数进行匹配。这种文件的大小要么<1个Piece，要么横跨两个Piece。"""
     hasher = sha1()
     fm_covered = []
     # 找到所有跟 bm 有交集的 file_meta，
@@ -153,8 +153,8 @@ def pass2_check_identical(bm, file_metas):
             intersect_first_byte_in_file = intersect_first_byte - fm.first_byte
             intersect_last_byte_in_file = intersect_last_byte - fm.first_byte
             # TODO: should enumerate over all possible combinations
-            efm = fm.match_candidates[0]
-            with open(efm.path, "rb") as ef:
+            dfm = fm.match_candidates[0]
+            with open(dfm.path, "rb") as ef:
                 ef.seek(intersect_first_byte_in_file)
                 hasher.update(ef.read(intersect_last_byte_in_file - intersect_first_byte_in_file))
     hash = hasher.hexdigest()
@@ -180,9 +180,9 @@ if __name__ == "__main__":
 
     try:
         data = torrent_parser.parse_torrent_file(args.torrent)
-        block_size = int(data["info"]["piece length"])
+        piece_length = int(data["info"]["piece length"])
         file_metas = parse_files_meta(
-            args.dst / data["info"]["name"], data["info"]["files"], data["info"]["pieces"], block_size
+            args.dst / data["info"]["name"], data["info"]["files"], data["info"]["pieces"], piece_length
         )
     except Exception as e:
         print(e, file=sys.stderr)
@@ -192,42 +192,42 @@ if __name__ == "__main__":
 
     try:
         file_list = args.src_list.read_text(encoding="utf8").splitlines()
-        existed_file_metas = parse_existed_files_meta(file_list)
+        disk_file_metas = parse_disk_file_metas(file_list)
     except Exception as e:
         print(e, file=sys.stderr)
-        print("Failed to read existed files (or the list)!", file=sys.stderr)
+        print("Failed to read disk files (or the list)!", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
 
     try:
-        # pass 1, find matchings by blocks completely contained in a file
-        blocks_to_check = args.blocks_to_check
+        # pass 1, find matchings by pieces completely contained in a file
+        pieces_to_check = args.pieces_to_check
         for fm in file_metas:
             # just proceed in the brute-force way
-            for efm in existed_file_metas:
-                if fm.length != efm.length:
+            for dfm in disk_file_metas:
+                if fm.length != dfm.length:
                     continue
-                fm.match_candidates.append(efm)
-                if pass1_check_identical(fm, efm, blocks_to_check):
-                    fm.matches.append(efm)
+                fm.match_candidates.append(dfm)
+                if pass1_check_identical(fm, dfm, pieces_to_check):
+                    fm.matches.append(dfm)
 
         # t1 = []
         # for fm in file_metas:
         #     if fm.matches:
         #         t1.append(fm)
 
-        # pass 2, try to match some files, each contained in a whole block
+        # pass 2, try to match some files, each contained in a whole piece
         for fm in file_metas:
-            if len(fm.blocks) == 1 and not fm.matches:
-                pass2_check_identical(fm.blocks[0], file_metas)
+            if len(fm.pieces) == 1 and not fm.matches:
+                pass2_check_identical(fm.pieces[0], file_metas)
 
-        # also, it may be the case where a file is covered by two blocks
+        # also, it may be the case where a file is covered by two pieces
         for fm in file_metas:
             if (
                 not fm.matches
-                and len(fm.blocks) == 2
-                and pass2_check_identical(fm.blocks[0], file_metas)
-                and pass2_check_identical(fm.blocks[1], file_metas)
+                and len(fm.pieces) == 2
+                and pass2_check_identical(fm.pieces[0], file_metas)
+                and pass2_check_identical(fm.pieces[1], file_metas)
             ):
                 fm.matches.append(fm.match_candidates[0])
 
@@ -238,7 +238,7 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(e, file=sys.stderr)
-        print("Failed to read some data blocks!", file=sys.stderr)
+        print("Failed to read some data pieces!", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
 
@@ -246,12 +246,12 @@ if __name__ == "__main__":
     try:
         # finally, create hard links
         for fm in (x for x in file_metas if x.matches):
-            efm = fm.matches[0]
+            dfm = fm.matches[0]
             fm.path.parent.mkdir(parents=True, exist_ok=True)
             if args.create_symlinks:
-                efm.path.symlink_to(fm.path)
+                dfm.path.symlink_to(fm.path)
             else:
-                efm.path.link_to(fm.path)
+                dfm.path.link_to(fm.path)
             num_linked += 1
     except Exception as e:
         print(e, file=sys.stderr)
