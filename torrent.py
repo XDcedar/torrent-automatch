@@ -13,10 +13,11 @@ import torrent_parser
 
 @dataclass
 class PieceMeta:
-    """记录种子的每个Piece的信息"""
+    """记录种子的每个 piece 的信息
+
+    每个 piece 包含的 bytes 的下标区间为 [first_byte, last_byte)"""
 
     id: int = 0
-    # the piece contains bytes in index range [first_byte, last_byte)
     first_byte: int = 0
     last_byte: int = 0
     hash: str = ""
@@ -30,7 +31,10 @@ class DiskFileMeta:
     """记录硬盘中找到的文件的信息"""
 
     path: Path = field(default_factory=Path)
-    length: int = 0
+    length: int = field(init=False)
+
+    def __post_init__(self):
+        self.length = self.path.stat().st_size
 
 
 @dataclass
@@ -40,10 +44,13 @@ class FileMeta:
     path: Path = field(default_factory=Path)
     length: int = 0
     first_byte: int = 0
-    last_byte: int = 0
+    last_byte: int = field(init=False)
     pieces: list[PieceMeta] = field(default_factory=list)
     match_candidates: list[DiskFileMeta] = field(default_factory=list)  # 该 FileMeta 的候选，目前会把所有大小相同的文件加进来
     matches: list[DiskFileMeta] = field(default_factory=list)  # 已确定对应该 FileMeta。不知为何要用list，按理说只会有一个才对
+
+    def __post_init__(self):
+        self.last_byte = self.first_byte + self.length
 
 
 def do_arg_parse():
@@ -58,24 +65,29 @@ def do_arg_parse():
     parser.add_argument("--dst", type=Path, dest="dst", help="the destination directory")
     parser.add_argument("--pieces-to-check", type=int, dest="pieces_to_check", default=10)
     parser.add_argument("--create-symlinks", dest="create_symlinks", action="store_true")
+
     args = parser.parse_args()
-    return args, parser
+    try:
+        args.dst = args.dst.resolve(strict=True)
+    except FileNotFoundError:
+        print("Wrong destination path!", file=sys.stderr)
+        sys.exit(1)
+
+    return args
 
 
-def parse_files_meta(root_directory_path: Path, files_info: list, piece_hashes: list, piece_length: int):
+def parse_files_meta(root: Path, files_info: list, piece_hashes: list, piece_length: int):
     """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Piece"""
     file_metas = []
     current_byte = 0
     num_pieces = len(piece_hashes)
     piece_id = 0
-    current_piece = PieceMeta()
-    current_piece.last_byte = 0
+    current_piece = PieceMeta(last_byte=0)
     for f in files_info:
         fm = FileMeta(
-            path=root_directory_path.joinpath(*f["path"]),
+            path=root.joinpath(*f["path"]),
             length=int(f["length"]),
             first_byte=current_byte,
-            last_byte=current_byte + int(f["length"]),
         )
         current_byte += fm.length
         file_metas.append(fm)
@@ -138,25 +150,28 @@ def pass2_check_identical(bm, file_metas):
     """文件不包含完整Piece，则调用这个函数进行匹配。这种文件的大小要么<1个Piece，要么横跨两个Piece。"""
     hasher = sha1()
     fm_covered = []
-    # 找到所有跟 bm 有交集的 file_meta，
+    # 找到所有跟该 bm 有交集的 file_meta（注意 fm 的区间是左闭右开的，两个比较都应该是"<="）
+    intersected_file_metas = (
+        fm
+        for fm in file_metas  # not (fm完全在bm左侧 or fm完全在bm右侧)
+        if not (fm.last_byte <= bm.first_byte or fm.first_byte >= bm.last_byte)
+    )
     # 以它们在 file_metas 中的默认顺序依次读取，计算它们拼起来的片段对应的 sha1
-    # TODO: 本来应该计算所有顺序组合的情况
-    for fm in file_metas:
-        if not (fm.first_byte >= bm.last_byte or fm.last_byte <= bm.first_byte):
-            if not fm.match_candidates:
-                return False
-            intersect_first_byte = max(fm.first_byte, bm.first_byte)
-            intersect_last_byte = min(fm.last_byte, bm.last_byte)
-            # print(intersect_first_byte, intersect_last_byte)
-            if intersect_first_byte == fm.first_byte and intersect_last_byte == fm.last_byte:
-                fm_covered.append(fm)
-            intersect_first_byte_in_file = intersect_first_byte - fm.first_byte
-            intersect_last_byte_in_file = intersect_last_byte - fm.first_byte
-            # TODO: should enumerate over all possible combinations
-            dfm = fm.match_candidates[0]
-            with open(dfm.path, "rb") as ef:
-                ef.seek(intersect_first_byte_in_file)
-                hasher.update(ef.read(intersect_last_byte_in_file - intersect_first_byte_in_file))
+    for fm in intersected_file_metas:
+        if not fm.match_candidates:
+            return False
+        intersect_first_byte = max(fm.first_byte, bm.first_byte)
+        intersect_last_byte = min(fm.last_byte, bm.last_byte)
+        # 如果当前 fm 完全在该 bm 中，那么添加到 fm_covered 中
+        if intersect_first_byte == fm.first_byte and intersect_last_byte == fm.last_byte:
+            fm_covered.append(fm)
+        intersect_first_byte_in_file = intersect_first_byte - fm.first_byte
+        intersect_last_byte_in_file = intersect_last_byte - fm.first_byte
+        # TODO: 目前仅取了 fm.match_candidates[0]，本来应该计算所有match_candidates组合的情况
+        dfm = fm.match_candidates[0]
+        with open(dfm.path, "rb") as ef:
+            ef.seek(intersect_first_byte_in_file)
+            hasher.update(ef.read(intersect_last_byte_in_file - intersect_first_byte_in_file))
     hash = hasher.hexdigest()
     if hash == bm.hash:
         for fm in fm_covered:
@@ -167,27 +182,19 @@ def pass2_check_identical(bm, file_metas):
 
 
 if __name__ == "__main__":
-    args, parser = do_arg_parse()
-    file_metas = []
+    args = do_arg_parse()
 
     try:
-        args.dst = args.dst.resolve()
-    except Exception as e:
-        print(e, file=sys.stderr)
-        print("Wrong destination path!", file=sys.stderr)
-        parser.print_help()
-        sys.exit(1)
-
-    try:
-        data = torrent_parser.parse_torrent_file(args.torrent)
-        piece_length = int(data["info"]["piece length"])
+        torrent = torrent_parser.parse_torrent_file(args.torrent)
         file_metas = parse_files_meta(
-            args.dst / data["info"]["name"], data["info"]["files"], data["info"]["pieces"], piece_length
+            root=args.dst / torrent["info"]["name"],
+            files_info=torrent["info"]["files"],
+            piece_hashes=torrent["info"]["pieces"],
+            piece_length=torrent["info"]["piece length"],
         )
     except Exception as e:
         print(e, file=sys.stderr)
         print("Failed to read the torrent file, or it is not a multiple-file torrent!", file=sys.stderr)
-        parser.print_help()
         sys.exit(1)
 
     try:
@@ -196,7 +203,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(e, file=sys.stderr)
         print("Failed to read disk files (or the list)!", file=sys.stderr)
-        parser.print_help()
         sys.exit(1)
 
     try:
@@ -239,7 +245,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(e, file=sys.stderr)
         print("Failed to read some data pieces!", file=sys.stderr)
-        parser.print_help()
         sys.exit(1)
 
     num_linked = 0
@@ -256,7 +261,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(e, file=sys.stderr)
         print("Error occurs when creating links!", file=sys.stderr)
-        parser.print_help()
         sys.exit(1)
 
     print(f"Successfully linked {num_linked}/{len(file_metas)} files.")
