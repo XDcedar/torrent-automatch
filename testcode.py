@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
-import torrent_parser
+from itertools import zip_longest
+from pathlib import Path
 from pprint import pprint
+
+import torrent_parser
+
+import torrent
 
 """
 需要考虑的边缘情况：
@@ -17,17 +22,83 @@ existed 前缀更名为 disk
 添加 requirements.txt `pip install -r requirements.txt`
 """
 
+"""
+文件的首尾位置有3种情况：在piece边界的前、中、后。
+文件的长度也有3种情况：小于1个piece、小于2个pieces、大于等于3个pieces
 
-def test():
-    breakpoint()
+files  |-A-|---B---|---C---|-D-|E|F|-G-|----H----|--------I--------|-J-|---K---|
+pieces |-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
+hashes    a     b     c     d     e     f     g     h     i     j     k     l
+
+根据以上来构造 torrent 例子。
+注意，'|' 代表的长度与 '-' 相同，计算长度时只算左侧的 '|'。
+"""
+my_test_torrent = {
+    "announce": "http://example.com:8888/announce",
+    "announce-list": [
+        ["http://example.com:8888/announce"],
+        ["udp://example.com:80/announce"],
+        ["udp://example.com:6969/announce"],
+    ],
+    "comment": "test torrent",
+    "created by": "Ceder",
+    "creation date": 1555905670,
+    "info": {
+        "files": [
+            {"length": 4, "path": ["A"]},
+            {"length": 8, "path": ["B"]},
+            {"length": 8, "path": ["C"]},
+            {"length": 4, "path": ["D"]},
+            {"length": 2, "path": ["E"]},
+            {"length": 2, "path": ["F"]},
+            {"length": 4, "path": ["G"]},
+            {"length": 10, "path": ["H"]},
+            {"length": 18, "path": ["I"]},
+            {"length": 4, "path": ["J"]},
+            {"length": 8, "path": ["K"]},
+        ],
+        "name": "test torrent",
+        "piece length": 6,
+        "pieces": list("abcdefghijkl"),
+    },
+}
+
+
+def test_torrent_parser():
     torrent = torrent_parser.parse_torrent_file(
         "./testcase/[VCB-Studio] Sono Hanabira ni Kuchizuke o꞉ Anata to Koibito Tsunagi [Ma10p_1080p].torrent"
     )
     return torrent
 
 
+def test_parsing_my_torrent():
+    filemetas = torrent.parse_files_meta(root=Path(r"D:/"), torrent=my_test_torrent)
+
+    def same_hash_value(piecemetas: list[torrent.PieceMeta], hashes: list[str]):
+        piece_hashes = (p.hash for p in piecemetas)
+        return all(x == y for x, y in zip_longest(piece_hashes, hashes))
+
+    # files  |-A-|---B---|---C---|-D-|E|F|-G-|----H----|--------I--------|-J-|---K---|
+    # pieces |-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
+    # hashes    a     b     c     d     e     f     g     h     i     j     k     l
+    assert same_hash_value(filemetas[0].pieces, ["a"])
+    assert same_hash_value(filemetas[1].pieces, ["a", "b"])
+    assert same_hash_value(filemetas[2].pieces, ["c", "d"])
+    assert same_hash_value(filemetas[3].pieces, ["d"])
+    assert same_hash_value(filemetas[4].pieces, ["e"])
+    assert same_hash_value(filemetas[5].pieces, ["e"])
+    assert same_hash_value(filemetas[6].pieces, ["e", "f"])
+    assert same_hash_value(filemetas[7].pieces, ["f", "g"])
+    assert same_hash_value(filemetas[8].pieces, ["h", "i", "j"])
+    assert same_hash_value(filemetas[9].pieces, ["k"])
+    assert same_hash_value(filemetas[10].pieces, ["k", "l"])
+    print("All Green!")
+
+
 if __name__ == "__main__":
-    pprint(test())
+    # test_torrent_parser()
+    test_parsing_my_torrent()
+    pass
 
 """
 torrent example
