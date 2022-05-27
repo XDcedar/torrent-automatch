@@ -4,6 +4,7 @@
 import argparse
 from dataclasses import dataclass, field
 from hashlib import sha1
+from itertools import tee, accumulate
 import random
 import sys
 from pathlib import Path
@@ -15,7 +16,10 @@ import torrent_parser
 class PieceMeta:
     """记录种子的每个 piece 的信息
 
-    每个 piece 包含的 bytes 的下标区间为 [first_byte, last_byte)"""
+    每个 piece 包含的 bytes 的下标区间为 [first_byte, last_byte)
+    first_byte: 在 torrent 拼接成的大文件中的起始位置
+    last_byte: 在 torrent 拼接成的大文件中的结束位置
+    """
 
     id: int = 0
     first_byte: int = 0
@@ -76,50 +80,64 @@ def do_arg_parse():
     return args
 
 
-def parse_files_meta(root: Path, files_info: list, piece_hashes: list, piece_length: int):
+def parse_files_meta(root: Path, torrent: dict):
     """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Piece"""
-    file_metas = []
-    current_byte = 0
-    num_pieces = len(piece_hashes)
-    piece_id = 0
-    current_piece = PieceMeta(last_byte=0)
-    for f in files_info:
-        fm = FileMeta(
+
+    root = root / torrent["info"]["name"]
+    files_info = torrent["info"]["files"]
+    piece_hashes = torrent["info"]["pieces"]
+    piece_length = torrent["info"]["piece length"]
+
+    # 生成所有 filemetas
+    file_lengths = (int(f["length"]) for f in files_info)
+    file_lengths, for_accumulate = tee(file_lengths)
+    tempiter = zip(files_info, file_lengths, accumulate(for_accumulate, initial=0))
+    filemetas = [
+        FileMeta(
             path=root.joinpath(*f["path"]),
-            length=int(f["length"]),
-            first_byte=current_byte,
+            length=length,
+            first_byte=first_byte,
         )
-        current_byte += fm.length
-        file_metas.append(fm)
-        if current_piece.last_byte > fm.first_byte:
-            fm.pieces.append(current_piece)
-        if current_piece.last_byte >= fm.last_byte:
-            continue
-        # 把所有属于该 FileMeta 的 PieceMeta() 放进来。
-        # 如果这个 PieceMeta() 只有一部分属于该 FileMeta，
-        # 则直接 break 而不让 piece_id 自增，
-        # 以便下一个外层 for 循环把它放到下一个 FileMeta 中去。
-        while piece_id < num_pieces:
-            current_piece = PieceMeta(
-                id=piece_id,
-                first_byte=piece_id * piece_length,
-                last_byte=piece_id * piece_length + piece_length,
-                hash=piece_hashes[piece_id].strip(),
-            )
-            piece_id += 1
-            # 当前 piece_meta 已越过 file_meta 的位置
-            if current_piece.first_byte >= fm.last_byte:
-                break
-            fm.pieces.append(current_piece)
-            # 当前 piece_meta 只有一部分处于 file_meta 之中
-            if current_piece.last_byte > fm.last_byte:
-                break
-            current_piece.in_single_file = True
-            current_piece.first_byte_in_file = current_piece.first_byte - fm.first_byte
-            current_piece.last_byte_in_file = current_piece.last_byte - fm.first_byte
-        if piece_id >= num_pieces:
+        for f, length, first_byte in tempiter
+    ]
+    # 利用 piece_hashes 构造 PieceMeta 迭代器
+    piecemetas = (
+        PieceMeta(
+            id=i,
+            first_byte=i * piece_length,
+            last_byte=i * piece_length + piece_length,
+            hash=x.strip(),
+        )
+        for i, x in enumerate(piece_hashes)
+    )
+    # 关联二者
+    # 外层 for 循环用于 pm 包含多个 fm 时让 fm 递增
+    # 内层 while 循环用于 fm 包含多个 pm 时 让 pm 递增
+    breakpoint()
+    pm = next(piecemetas, None)
+    for fm in filemetas:
+        if not pm:
             break
-    return file_metas
+        if pm.last_byte > fm.first_byte:  # 若 pm 不完全在 fm 中
+            fm.pieces.append(pm)
+        if pm.last_byte >= fm.last_byte:  # 若 pm 有一部分超出 fm 的范围
+            continue
+        # fm 囊括了多个 piecemeta 时
+        while True:
+            pm = next(piecemetas, None)
+            if not pm:
+                break
+            if pm.first_byte >= fm.last_byte:  # 若 pm 有一部分超出 fm 的范围
+                break
+            fm.pieces.append(pm)
+            if pm.last_byte > fm.last_byte:  # 若 pm 不完全在 fm 中
+                break
+            # pm 完全在 fm 之中。
+            # pm 自增并设置 first_byte_in_file 和 last_byte_in_file
+            pm.in_single_file = True
+            pm.first_byte_in_file = pm.first_byte - fm.first_byte
+            pm.last_byte_in_file = pm.last_byte - fm.first_byte
+    return filemetas
 
 
 def parse_disk_file_metas(file_list: list):
@@ -155,7 +173,7 @@ def pass1_check_identical(fm: FileMeta, dfm: DiskFileMeta, pieces_to_check: int)
 
 # this function has side-effect!
 def pass2_check_identical(bm, file_metas):
-    """文件不包含完整Piece，则调用这个函数进行匹配。这种文件的大小要么<1个Piece，要么横跨两个Piece。"""
+    """文件不包含完整Piece，则调用本函数进行匹配。这种文件的大小要么<1个Piece，要么横跨2个Piece。"""
     hasher = sha1()
     fm_covered = []
     # 找到所有跟该 bm 有交集的 file_meta（注意 fm 的区间是左闭右开的，两个比较都应该是"<="）
@@ -194,12 +212,7 @@ if __name__ == "__main__":
 
     try:
         torrent = torrent_parser.parse_torrent_file(args.torrent)
-        file_metas = parse_files_meta(
-            root=args.dst / torrent["info"]["name"],
-            files_info=torrent["info"]["files"],
-            piece_hashes=torrent["info"]["pieces"],
-            piece_length=torrent["info"]["piece length"],
-        )
+        file_metas = parse_files_meta(root=args.dst, torrent=torrent)
     except Exception as e:
         print(e, file=sys.stderr)
         print("Failed to read the torrent file, or it is not a multiple-file torrent!", file=sys.stderr)
