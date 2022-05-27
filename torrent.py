@@ -123,10 +123,17 @@ def parse_files_meta(root: Path, files_info: list, piece_hashes: list, piece_len
 
 
 def parse_disk_file_metas(file_list: list):
-    """根据输入的 file_list 读取硬盘中的文件，构建 DiskFileMeta 信息"""
-    path_list = map(lambda line: Path(line.strip()).resolve(), file_list)
-    res = [DiskFileMeta(path=p, length=p.stat().st_size) for p in path_list]
-    return res
+    """根据输入的 file_list 读取硬盘中的文件，构建 DiskFileMeta 信息
+
+    file_list 中可以有文件夹，但文件夹不能相互包含，否则会得到重复文件，降低效率。"""
+    result = []
+    for path in file_list:
+        path = Path(path.strip()).resolve()
+        if path.is_dir():
+            result.extend(DiskFileMeta(p) for p in path.rglob("*") if p.is_file())
+        else:
+            result.append(DiskFileMeta(path))
+    return result
 
 
 def pass1_check_identical(fm: FileMeta, dfm: DiskFileMeta, pieces_to_check: int):
@@ -134,6 +141,7 @@ def pass1_check_identical(fm: FileMeta, dfm: DiskFileMeta, pieces_to_check: int)
     pieces_in_single_file = [x for x in fm.pieces if x.in_single_file]
     k = min(len(pieces_in_single_file), pieces_to_check)
     sampled_bms = random.sample(pieces_in_single_file, k)
+    sampled_bms.sort(key=lambda x: x.first_byte)  # 排序以增加随机读取的效率
     if not sampled_bms:
         return False
     with open(dfm.path, "rb") as ef:
