@@ -17,8 +17,6 @@ import torrent
 
 TODO:
 增加 --dry-run 选项
-block 更名为 piece
-existed 前缀更名为 disk
 添加 requirements.txt `pip install -r requirements.txt`
 """
 
@@ -26,7 +24,7 @@ existed 前缀更名为 disk
 文件的首尾位置有3种情况：在piece边界的前、中、后。
 文件的长度也有3种情况：小于1个piece、小于2个pieces、大于等于3个pieces
 
-files  |-A-|---B---|---C---|-D-|E|F|-G-|----H----|--------I--------|-J-|---K---|
+files  |-A-|----B----|--C--|-D-|E|F|-G-|----H----|--------I--------|---J---|-K-|
 pieces |-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
 hashes    a     b     c     d     e     f     g     h     i     j     k     l
 
@@ -46,16 +44,16 @@ my_test_torrent = {
     "info": {
         "files": [
             {"length": 4, "path": ["A"]},
-            {"length": 8, "path": ["B"]},
-            {"length": 8, "path": ["C"]},
+            {"length": 10, "path": ["B"]},
+            {"length": 6, "path": ["C"]},
             {"length": 4, "path": ["D"]},
             {"length": 2, "path": ["E"]},
             {"length": 2, "path": ["F"]},
             {"length": 4, "path": ["G"]},
             {"length": 10, "path": ["H"]},
             {"length": 18, "path": ["I"]},
-            {"length": 4, "path": ["J"]},
-            {"length": 8, "path": ["K"]},
+            {"length": 8, "path": ["J"]},
+            {"length": 4, "path": ["K"]},
         ],
         "name": "test torrent",
         "piece length": 6,
@@ -78,11 +76,11 @@ def test_parsing_my_torrent():
         piece_hashes = (p.hash for p in piecemetas)
         return all(x == y for x, y in zip_longest(piece_hashes, hashes))
 
-    # files  |-A-|---B---|---C---|-D-|E|F|-G-|----H----|--------I--------|-J-|---K---|
+    # files  |-A-|----B----|--C--|-D-|E|F|-G-|----H----|--------I--------|---J---|-K-|
     # pieces |-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
     # hashes    a     b     c     d     e     f     g     h     i     j     k     l
     assert same_hash_value(filemetas[0].pieces, ["a"])
-    assert same_hash_value(filemetas[1].pieces, ["a", "b"])
+    assert same_hash_value(filemetas[1].pieces, ["a", "b", "c"])
     assert same_hash_value(filemetas[2].pieces, ["c", "d"])
     assert same_hash_value(filemetas[3].pieces, ["d"])
     assert same_hash_value(filemetas[4].pieces, ["e"])
@@ -90,8 +88,8 @@ def test_parsing_my_torrent():
     assert same_hash_value(filemetas[6].pieces, ["e", "f"])
     assert same_hash_value(filemetas[7].pieces, ["f", "g"])
     assert same_hash_value(filemetas[8].pieces, ["h", "i", "j"])
-    assert same_hash_value(filemetas[9].pieces, ["k"])
-    assert same_hash_value(filemetas[10].pieces, ["k", "l"])
+    assert same_hash_value(filemetas[9].pieces, ["k", "l"])
+    assert same_hash_value(filemetas[10].pieces, ["l"])
     print("All Green!")
 
 
