@@ -4,10 +4,11 @@
 import argparse
 from dataclasses import dataclass, field
 from hashlib import sha1
-from itertools import tee, accumulate
+from itertools import accumulate, tee, product
+from pathlib import Path
 import random
 import sys
-from pathlib import Path
+from types import SimpleNamespace
 
 import torrent_parser
 
@@ -113,7 +114,6 @@ def parse_files_meta(root: Path, torrent: dict):
     # 关联二者
     # 外层 for 循环用于 pm 包含多个 fm 时让 fm 递增
     # 内层 while 循环用于 fm 包含多个 pm 时 让 pm 递增
-    breakpoint()
     pm = next(piecemetas, None)
     for fm in filemetas:
         if not pm:
@@ -172,37 +172,48 @@ def pass1_check_identical(fm: FileMeta, dfm: DiskFileMeta, pieces_to_check: int)
 
 
 # this function has side-effect!
-def pass2_check_identical(bm, file_metas):
-    """文件不包含完整Piece，则调用本函数进行匹配。这种文件的大小要么<1个Piece，要么横跨2个Piece。"""
-    hasher = sha1()
-    fm_covered = []
-    # 找到所有跟该 bm 有交集的 file_meta（注意 fm 的区间是左闭右开的，两个比较都应该是"<="）
-    intersected_file_metas = (
-        fm
-        for fm in file_metas  # not (fm完全在bm左侧 or fm完全在bm右侧)
-        if not (fm.last_byte <= bm.first_byte or fm.first_byte >= bm.last_byte)
-    )
-    # 以它们在 file_metas 中的默认顺序依次读取，计算它们拼起来的片段对应的 sha1
-    for fm in intersected_file_metas:
-        if not fm.match_candidates:
-            return False
-        intersect_first_byte = max(fm.first_byte, bm.first_byte)
-        intersect_last_byte = min(fm.last_byte, bm.last_byte)
-        # 如果当前 fm 完全在该 bm 中，那么添加到 fm_covered 中
-        if intersect_first_byte == fm.first_byte and intersect_last_byte == fm.last_byte:
-            fm_covered.append(fm)
-        intersect_first_byte_in_file = intersect_first_byte - fm.first_byte
-        intersect_last_byte_in_file = intersect_last_byte - fm.first_byte
-        # TODO: 目前仅取了 fm.match_candidates[0]，本来应该计算所有match_candidates组合的情况
-        dfm = fm.match_candidates[0]
-        with open(dfm.path, "rb") as ef:
-            ef.seek(intersect_first_byte_in_file)
-            hasher.update(ef.read(intersect_last_byte_in_file - intersect_first_byte_in_file))
-    hash = hasher.hexdigest()
-    if hash == bm.hash:
-        for fm in fm_covered:
-            if not fm.matches:
-                fm.matches.append(fm.match_candidates[0])
+def pass2_check_identical(pm: PieceMeta, filemetas: list[FileMeta]):
+    """文件不包含完整Piece，则调用本函数进行匹配。这种文件的长度要么<1个Piece，要么横跨2个Piece。
+
+    如果有多个候选项，采用简单粗暴的枚举法找到符合条件的文件。"""
+    # 找到所有跟该 pm 有交集的 filemeta，
+    # 构建 SimpleNamespace 用于稍后保存其他临时数据
+    intersected_filemetas = [
+        SimpleNamespace(filemeta=fm)
+        for fm in filemetas  # not (fm完全在pm左侧 or fm完全在pm右侧)。fm 区间左闭右开，比较要用"<="和">="
+        if not (fm.last_byte <= pm.first_byte or fm.first_byte >= pm.last_byte)
+    ]
+    # 确保有交集的 filemeta 在硬盘上必定有对应的候选文件
+    if any(not ifm.filemeta.match_candidates for ifm in intersected_filemetas):
+        return False
+    # 计算并记录每个 filemeta 的区间数据供稍后使用
+    for ifm in intersected_filemetas:
+        fm = ifm.filemeta
+        ifm.intersect_first_byte = max(fm.first_byte, pm.first_byte)
+        ifm.intersect_last_byte = min(fm.last_byte, pm.last_byte)
+        ifm.intersect_length = ifm.intersect_last_byte - ifm.intersect_first_byte
+        ifm.intersect_first_byte_in_file = ifm.intersect_first_byte - fm.first_byte
+    # 利用 itertools.product() 生成所有 match_candidates 的笛卡尔积，
+    # 以它们在 filemetas 中的默认顺序依次读取，暴力枚举全部可能性，计算对应的 sha1
+    combinations = product(*(x.filemeta.match_candidates for x in intersected_filemetas))
+    for combination in combinations:
+        hasher = sha1()
+        for ifm, dfm in zip(intersected_filemetas, combination):
+            with open(dfm.path, "rb") as ef:
+                ef.seek(ifm.intersect_first_byte_in_file)
+                hasher.update(ef.read(ifm.intersect_length))
+        hexdigest = hasher.hexdigest()
+        # 如果sha1值匹配，则为所有完全被该 pm 包含的 filemeta 添加 matches
+        # （对于横跨两个 piece 的 fm，会在调用本函数后执行该操作）
+        if hexdigest != pm.hash:
+            continue
+        for ifm, dfm in zip(intersected_filemetas, combination):
+            if (
+                ifm.intersect_first_byte == ifm.filemeta.first_byte
+                and ifm.intersect_last_byte == ifm.filemeta.last_byte
+            ):
+                if not ifm.filemeta.matches:
+                    ifm.filemeta.matches.append(dfm)
         return True
     return False
 
