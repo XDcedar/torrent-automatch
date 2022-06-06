@@ -4,3 +4,4 @@ testcase
 testsrclist.txt
 TODO.txt
 *.view.vim
+__pycache__
