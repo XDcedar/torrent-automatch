@@ -44,7 +44,12 @@ class DiskFileMeta:
 
 @dataclass
 class FileMeta:
-    """记录种子中的文件的信息"""
+    """记录种子中的文件的信息
+
+    每个 File 包含的 bytes 的下标区间为 [first_byte, last_byte)
+    first_byte: 在 torrent 拼接成的大文件中的起始位置
+    last_byte: 在 torrent 拼接成的大文件中的结束位置
+    """
 
     path: Path = field(default_factory=Path)
     length: int = 0
@@ -82,7 +87,7 @@ def do_arg_parse():
 
 
 def parse_files_meta(root: Path, torrent: dict):
-    """根据种子信息向构建 file_metas 用于记录种子中每个文件对应的 Piece"""
+    """根据种子信息构建 filemetas，用于记录种子中每个文件对应的 Piece"""
 
     root = root / torrent["info"]["name"]
     files_info = torrent["info"]["files"]
@@ -118,19 +123,19 @@ def parse_files_meta(root: Path, torrent: dict):
     for fm in filemetas:
         if not pm:
             break
-        if pm.last_byte > fm.first_byte:  # 若 pm 不完全在 fm 中
+        if pm.last_byte > fm.first_byte:  # 若 pm 有一部分在 fm 之前
             fm.pieces.append(pm)
-        if pm.last_byte >= fm.last_byte:  # 若 pm 有一部分超出 fm 的范围
+        if pm.last_byte >= fm.last_byte:  # 若 pm 有一部分在 fm 之后
             continue
         # fm 囊括了多个 piecemeta 时
         while True:
             pm = next(piecemetas, None)
             if not pm:
                 break
-            if pm.first_byte >= fm.last_byte:  # 若 pm 有一部分超出 fm 的范围
+            if pm.first_byte >= fm.last_byte:  # 若 pm 有一部分在 fm 之后
                 break
             fm.pieces.append(pm)
-            if pm.last_byte > fm.last_byte:  # 若 pm 不完全在 fm 中
+            if pm.last_byte > fm.last_byte:  # 若 pm 有一部分在 fm 之前
                 break
             # pm 完全在 fm 之中。
             # pm 自增并设置 first_byte_in_file 和 last_byte_in_file
@@ -218,9 +223,7 @@ def pass2_check_identical(pm: PieceMeta, filemetas: list[FileMeta]):
     return False
 
 
-if __name__ == "__main__":
-    args = do_arg_parse()
-
+def main(args):
     try:
         torrent = torrent_parser.parse_torrent_file(args.torrent)
         file_metas = parse_files_meta(root=args.dst, torrent=torrent)
@@ -249,14 +252,9 @@ if __name__ == "__main__":
                 if pass1_check_identical(fm, dfm, pieces_to_check):
                     fm.matches.append(dfm)
 
-        # t1 = []
-        # for fm in file_metas:
-        #     if fm.matches:
-        #         t1.append(fm)
-
         # pass 2, try to match some files, each contained in a whole piece
         for fm in file_metas:
-            if len(fm.pieces) == 1 and not fm.matches:
+            if not fm.matches and len(fm.pieces) == 1:
                 pass2_check_identical(fm.pieces[0], file_metas)
 
         # also, it may be the case where a file is covered by two pieces
@@ -268,20 +266,14 @@ if __name__ == "__main__":
                 and pass2_check_identical(fm.pieces[1], file_metas)
             ):
                 fm.matches.append(fm.match_candidates[0])
-
-        # t2 = []
-        # for fm in file_metas:
-        #     if fm.matches:
-        #         t2.append(fm)
-
     except Exception as e:
         print(e, file=sys.stderr)
         print("Failed to read some data pieces!", file=sys.stderr)
         sys.exit(1)
 
+    # finally, create hard links
     num_linked = 0
     try:
-        # finally, create hard links
         for fm in (x for x in file_metas if x.matches):
             dfm = fm.matches[0]
             fm.path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,3 +288,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"Successfully linked {num_linked}/{len(file_metas)} files.")
+
+
+if __name__ == "__main__":
+    args = do_arg_parse()
+    main(args)
