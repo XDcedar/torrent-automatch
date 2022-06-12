@@ -4,10 +4,11 @@
 import argparse
 from dataclasses import dataclass, field
 from hashlib import sha1
-from itertools import accumulate, tee, product
+from itertools import accumulate, product, tee
 from pathlib import Path
 import random
 import sys
+import textwrap
 from types import SimpleNamespace
 
 import torrent_parser
@@ -61,29 +62,6 @@ class FileMeta:
 
     def __post_init__(self):
         self.last_byte = self.first_byte + self.length
-
-
-def do_arg_parse():
-    parser = argparse.ArgumentParser(description="“浮肿一时爽，一直浮肿一直爽。”")
-    parser.add_argument(
-        "--src-list",
-        type=Path,
-        dest="src_list",
-        help="specify a textfile, each line contains a folder or file as a potential linking source.",
-    )
-    parser.add_argument("--torrent", type=Path, dest="torrent", help="the torrent file to work with")
-    parser.add_argument("--dst", type=Path, dest="dst", help="the destination directory")
-    parser.add_argument("--pieces-to-check", type=int, dest="pieces_to_check", default=10)
-    parser.add_argument("--create-symlinks", dest="create_symlinks", action="store_true")
-
-    args = parser.parse_args()
-    try:
-        args.dst = args.dst.resolve(strict=True)
-    except FileNotFoundError:
-        print("Wrong destination path!", file=sys.stderr)
-        sys.exit(1)
-
-    return args
 
 
 def parse_files_meta(root: Path, torrent: dict):
@@ -223,6 +201,39 @@ def pass2_check_identical(pm: PieceMeta, filemetas: list[FileMeta]):
     return False
 
 
+def do_arg_parse():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Match a given torrent file against the files in specific folders.",
+        epilog=textwrap.dedent(
+            """
+        Examples:
+        > py %(prog)s --src-list testsrclist.txt --torrent example.torrent --dst result_folder
+        > py %(prog)s --create-symlinks --pieces-to-check 15 --src-list testsrclist.txt --torrent example.torrent --dst result_folder
+        """
+        ),
+    )
+    parser.add_argument(
+        "--src-list",
+        type=Path,
+        dest="src_list",
+        help="a text file, each line contains a folder or file as a potential linking source.",
+    )
+    parser.add_argument("--torrent", type=Path, dest="torrent", help="the torrent file to work with")
+    parser.add_argument("--dst", type=Path, dest="dst", help="the destination directory")
+    parser.add_argument("--pieces-to-check", type=int, dest="pieces_to_check", default=10)
+    parser.add_argument("--create-symlinks", dest="create_symlinks", action="store_true")
+
+    args = parser.parse_args()
+    try:
+        args.dst = args.dst.resolve(strict=True)
+    except FileNotFoundError:
+        print("Wrong destination path!", file=sys.stderr)
+        sys.exit(1)
+
+    return args
+
+
 def main(args):
     try:
         torrent = torrent_parser.parse_torrent_file(args.torrent)
@@ -242,14 +253,13 @@ def main(args):
 
     try:
         # pass 1, find matchings by pieces completely contained in a file
-        pieces_to_check = args.pieces_to_check
         for fm in file_metas:
             # just proceed in the brute-force way
             for dfm in disk_file_metas:
                 if fm.length != dfm.length:
                     continue
                 fm.match_candidates.append(dfm)
-                if pass1_check_identical(fm, dfm, pieces_to_check):
+                if pass1_check_identical(fm, dfm, args.pieces_to_check):
                     fm.matches.append(dfm)
 
         # pass 2, try to match some files, each contained in a whole piece
