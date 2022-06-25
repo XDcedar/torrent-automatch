@@ -163,7 +163,7 @@ filemetas example
                      ...,
                      BlockMeta(id=43, first_byte=45088768, last_byte=46137344, hash='8f842...4bd9d', in_single_file=False, first_byte_in_file=0, last_byte_in_file=0)],
                      match_candidates=[], matches=[]),
-    FileMeta(path='D:\\github\\torrent\\result\\[VCB-Studio] Sono Hanabira ni Kuchizuke o꞉ Anata to Koibito Tsunagi [Ma10p_1080p]\\Scans\\DVD\\01.webp', length=672098, first_byte=45454457, last_byte=46126555, blocks=[BlockMeta(id=43, first_byte=45088768, last_byte=46137344, hash='8f842...4bd9d', in_single_file=False, first_byte_in_file=0, last_byte_in_file=0)], match_candidates=[], matches=[]),
+    FileMeta(path='D:\\github\\torrent\\result\\[VCB-Studio] Sono Hanabira ... [Ma10p_1080p]\\Scans\\DVD\\01.webp', length=672098, first_byte=45454457, last_byte=46126555, blocks=[BlockMeta(id=43, first_byte=45088768, last_byte=46137344, hash='8f842...4bd9d', in_single_file=False, first_byte_in_file=0, last_byte_in_file=0)], match_candidates=[], matches=[]),
     ...,
 ]
 """
